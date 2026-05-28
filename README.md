@@ -2,6 +2,28 @@
 
 在 AMOLED 屏幕上实时显示 Splatoon 3 鲑鱼跑（Salmon Run）的地图、时间、武器和 BOSS 信息。
 
+## 环境要求
+
+| 项目 | 版本 |
+|------|------|
+| ESP-IDF | v5.3.2 |
+| 目标芯片 | ESP32-S3 |
+
+## 依赖组件
+
+| 组件 | 来源 | 说明 |
+|------|------|------|
+| LVGL | managed_components（自动下载） | v8.4 UI 框架 |
+| cJSON | managed_components（自动下载） | JSON 解析库 |
+| esp_io_expander | managed_components（自动下载） | IO 扩展器抽象层 |
+| esp_io_expander_tca9554 | managed_components（自动下载） | TCA9554 驱动 |
+| esp_lcd_sh8601 | components（项目自带） | SH8601 AMOLED 驱动 |
+| esp_lcd_touch_ft5x06 | components（项目自带） | FT5x06 触摸驱动 |
+| esp_lcd_touch | components（项目自带） | 触摸抽象层 |
+| lodepng | main/lodepng（项目自带） | PNG 解码库 |
+
+> `managed_components` 目录未提交到仓库，首次编译时 ESP-IDF 会根据 `idf_component.yml` 自动下载。
+
 ## 硬件平台
 
 | 项目 | 规格 |
@@ -294,14 +316,29 @@ SH8601 AMOLED 控制器通过 QSPI 接口初始化：
 
 ## 构建与烧录
 
+### 1. 配置 WiFi
+
+编译前需修改 `main/salmon_run.c` 中的 WiFi 凭据：
+
+```c
+#define WIFI_SSID "YOUR_WIFI_SSID"      // 替换为你的 WiFi 名称
+#define WIFI_PASS "YOUR_WIFI_PASSWORD"   // 替换为你的 WiFi 密码
+```
+
+### 2. 编译
+
 ```bash
 # 设置 ESP-IDF 环境
 source ~/.espressif/v5.3.2/esp-idf/export.sh
 
-# 编译
+# 首次编译会自动下载 managed_components 依赖
 idf.py build
+```
 
-# 烧录（替换为实际串口）
+### 3. 烧录
+
+```bash
+# 替换为实际串口
 idf.py -p /dev/cu.usbmodem21201 flash
 
 # 串口监控
@@ -325,9 +362,7 @@ idf.py -p /dev/cu.usbmodem21201 monitor
 
 - **WiFi 凭据硬编码**：需修改源码才能更换网络
 - **无深度休眠**：GPIO0 按钮功能暂未实现（strapping pin 冲突）
-- **无错误恢复**：WiFi 连接失败或 HTTP 请求失败后不会重试
-- **字体字符集有限**：仅包含当前显示所需的 51 个汉字，新增翻译需重新生成字体
-- **无动态刷新**：数据获取后不会自动更新，需重启设备
+- **字体字符集有限**：仅包含当前显示所需的 52 个汉字，新增翻译需重新生成字体
 
 ## License
 
