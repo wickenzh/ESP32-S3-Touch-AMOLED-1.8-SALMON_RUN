@@ -1,0 +1,15 @@
+# Build output
+build/
+managed_components/
+dependencies.lock
+
+# IDE
+.vscode/
+
+# macOS
+.DS_Store
+.Trashes
+.TemporaryItems
+
+# SDK config backups
+sdkconfig.old
