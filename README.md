@@ -1,4 +1,5 @@
 # ESP32-S3 鲑鱼跑信息显示器
+<img width="808" height="986" alt="2026-05-29_080612_401" src="https://github.com/user-attachments/assets/ca079bb8-2e43-4d90-a2f5-cee319c68de9" />
 
 在 AMOLED 屏幕上实时显示 Splatoon 3 鲑鱼跑（Salmon Run）的地图、时间、武器和 BOSS 信息。
 
