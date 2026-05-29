@@ -21,6 +21,7 @@
 | esp_lcd_touch_ft5x06 | components（项目自带） | FT5x06 触摸驱动 |
 | esp_lcd_touch | components（项目自带） | 触摸抽象层 |
 | lodepng | main/lodepng（项目自带） | PNG 解码库 |
+| esp_http_server | ESP-IDF 内置 | Web 配网服务器 |
 
 > `managed_components` 目录未提交到仓库，首次编译时 ESP-IDF 会根据 `idf_component.yml` 自动下载。
 
@@ -36,13 +37,24 @@
 
 ## 功能实现
 
-### 1. WiFi 连接
+### 1. WiFi 连接与自动配网
 
-- 模式：STA（站点模式）
-- SSID 和密码硬编码在 `salmon_run.c` 中
-- 启动后自动连接，等待 IP 获取（最多 30 秒轮询）
-- 使用 `esp_netif_get_ip_info()` 确认获取 IP 后再进行网络操作
+**首次使用（无 WiFi 配置）：**
+- 设备自动创建热点 `SalmonRun-Setup`（无密码）
+- 手机连接热点，自动弹出配网页面
+- 输入 WiFi 名称和密码，点击 "Save & Reboot"
+- 设备保存配置到 NVS 并重启
+
+**正常使用（已有 WiFi 配置）：**
+- 从 NVS 读取 WiFi 凭据
+- 自动连接，等待 IP 获取（最多 30 秒）
+- 超时未连接成功则自动退回配网模式
 - 数据获取完成后自动断开 WiFi 节省功耗
+
+**倒计时结束刷新：**
+- 倒计时结束后等待 5 秒
+- 临时开启 WiFi 获取新数据
+- 获取完成后立即断开 WiFi
 
 ### 2. SNTP 时间同步
 
@@ -317,16 +329,7 @@ SH8601 AMOLED 控制器通过 QSPI 接口初始化：
 
 ## 构建与烧录
 
-### 1. 配置 WiFi
-
-编译前需修改 `main/salmon_run.c` 中的 WiFi 凭据：
-
-```c
-#define WIFI_SSID "YOUR_WIFI_SSID"      // 替换为你的 WiFi 名称
-#define WIFI_PASS "YOUR_WIFI_PASSWORD"   // 替换为你的 WiFi 密码
-```
-
-### 2. 编译
+### 1. 编译
 
 ```bash
 # 设置 ESP-IDF 环境
@@ -336,7 +339,7 @@ source ~/.espressif/v5.3.2/esp-idf/export.sh
 idf.py build
 ```
 
-### 3. 烧录
+### 2. 烧录
 
 ```bash
 # 替换为实际串口
@@ -345,6 +348,17 @@ idf.py -p /dev/cu.usbmodem21201 flash
 # 串口监控
 idf.py -p /dev/cu.usbmodem21201 monitor
 ```
+
+### 3. 首次配网
+
+1. 烧录后设备自动进入配网模式
+2. 屏幕显示 "WiFi Setup" 和热点名称
+3. 手机连接 `SalmonRun-Setup` 热点
+4. 浏览器自动弹出配网页面（如未弹出，访问 `192.168.4.1`）
+5. 输入 WiFi 名称和密码，点击 "Save & Reboot"
+6. 设备重启后自动连接 WiFi 并获取数据
+
+> WiFi 配置保存在 NVS 中，重新烧录固件不会丢失。如需重新配网，清除 NVS 分区即可。
 
 ## 已解决的问题
 
@@ -361,7 +375,6 @@ idf.py -p /dev/cu.usbmodem21201 monitor
 
 ## 当前限制
 
-- **WiFi 凭据硬编码**：需修改源码才能更换网络
 - **无深度休眠**：GPIO0 按钮功能暂未实现（strapping pin 冲突）
 - **字体字符集有限**：仅包含当前显示所需的 52 个汉字，新增翻译需重新生成字体
 

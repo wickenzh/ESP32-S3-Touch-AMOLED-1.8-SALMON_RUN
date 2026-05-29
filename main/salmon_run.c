@@ -19,6 +19,9 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_netif.h"
+#include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
 #include "esp_pm.h"
@@ -56,8 +59,6 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 #define PIN_BK_LIGHT -1
 #define PIN_BUTTON GPIO_NUM_0
 
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASS "YOUR_WIFI_PASSWORD"
 #define SCHEDULE_URL "https://splatoon3.ink/data/schedules.json"
 
 #define LVGL_BUF_HEIGHT 10
@@ -305,6 +306,147 @@ static bool parse_schedule(const char *json) {
     return true;
 }
 
+#define AP_SSID "SalmonRun-Setup"
+#define AP_PASS ""
+
+static char cfg_ssid[33] = {0};
+static char cfg_pass[65] = {0};
+static char WIFI_SSID_BUF[33] = {0};
+static char WIFI_PASS_BUF[65] = {0};
+
+static bool nvs_wifi_read(char *ssid, char *pass) {
+    nvs_handle_t h;
+    if (nvs_open("wifi", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t sl = 33, pl = 65;
+    bool ok = (nvs_get_str(h, "ssid", ssid, &sl) == ESP_OK && strlen(ssid) > 0);
+    if (ok) nvs_get_str(h, "pass", pass, &pl);
+    nvs_close(h);
+    return ok;
+}
+
+static void nvs_wifi_write(const char *ssid, const char *pass) {
+    nvs_handle_t h;
+    if (nvs_open("wifi", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "ssid", ssid);
+        nvs_set_str(h, "pass", pass);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void url_decode(const char *src, char *dst, size_t dst_len) {
+    size_t i = 0, j = 0;
+    while (src[i] && j < dst_len - 1) {
+        if (src[i] == '+') { dst[j++] = ' '; i++; }
+        else if (src[i] == '%' && src[i+1] && src[i+2]) {
+            char hex[3] = { src[i+1], src[i+2], 0 };
+            dst[j++] = (char)strtol(hex, NULL, 16);
+            i += 3;
+        } else { dst[j++] = src[i++]; }
+    }
+    dst[j] = 0;
+}
+
+static const char *PROV_HTML = "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Salmon Run WiFi Setup</title>"
+    "<style>body{font-family:sans-serif;max-width:360px;margin:40px auto;padding:0 20px;background:#111;color:#fff}"
+    "h2{color:#ff5600}input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #444;"
+    "background:#222;color:#fff;border-radius:6px}button{width:100%;padding:12px;background:#603bff;color:#fff;"
+    "border:none;border-radius:6px;font-size:16px;cursor:pointer;margin-top:10px}"
+    "button:hover{background:#7050ff}</style></head><body>"
+    "<h2>Salmon Run Display</h2><p>Connect to your WiFi network:</p>"
+    "<form action='/save' method='post'>"
+    "<label>SSID</label><input name='ssid' required placeholder='WiFi name'>"
+    "<label>Password</label><input name='pass' type='password' placeholder='WiFi password'>"
+    "<button type='submit'>Save & Reboot</button></form></body></html>";
+
+static esp_err_t prov_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, PROV_HTML, strlen(PROV_HTML));
+}
+
+static esp_err_t prov_save_handler(httpd_req_t *req) {
+    char buf[128] = {0};
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data"); return ESP_FAIL; }
+
+    char ssid[33] = {0}, pass[65] = {0};
+    char *s = strstr(buf, "ssid=");
+    char *p = strstr(buf, "pass=");
+    if (s) {
+        s += 5;
+        char *end = strchr(s, '&');
+        if (end) *end = 0;
+        url_decode(s, ssid, sizeof(ssid));
+    }
+    if (p) {
+        p += 5;
+        char *end = strchr(p, '&');
+        if (end) *end = 0;
+        url_decode(p, pass, sizeof(pass));
+    }
+
+    if (strlen(ssid) > 0) {
+        nvs_wifi_write(ssid, pass);
+        ESP_LOGI(TAG, "WiFi saved: %s", ssid);
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_send(req, "<html><body style='background:#111;color:#fff;text-align:center;padding-top:80px;font-family:sans-serif'>"
+            "<h2 style='color:#ff5600'>Saved! Rebooting...</h2></body></html>", -1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    }
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing SSID");
+    return ESP_FAIL;
+}
+
+static void start_provisioning(void) {
+    ESP_LOGI(TAG, "Starting provisioning AP: %s", AP_SSID);
+
+    esp_netif_create_default_wifi_ap();
+    wifi_config_t ap_cfg = { .ap = { .max_connection = 4, .authmode = WIFI_AUTH_OPEN } };
+    strlcpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
+    ap_cfg.ap.ssid_len = strlen(AP_SSID);
+
+    esp_wifi_set_mode(WIFI_MODE_AP);
+    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    esp_wifi_start();
+
+    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &hcfg) == ESP_OK) {
+        httpd_uri_t uri_get = { .uri = "/", .method = HTTP_GET, .handler = prov_get_handler };
+        httpd_uri_t uri_save = { .uri = "/save", .method = HTTP_POST, .handler = prov_save_handler };
+        httpd_register_uri_handler(server, &uri_get);
+        httpd_register_uri_handler(server, &uri_save);
+    }
+
+    if (lock_lvgl(-1)) {
+        lv_label_set_text(lbl_status, "WiFi Setup");
+        lv_label_set_text(lbl_map_name, AP_SSID);
+        lv_label_set_text(lbl_time_range, "Connect & configure");
+        unlock_lvgl();
+    }
+
+    while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+}
+
+static bool wifi_connect_with_timeout(int timeout_sec) {
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    int waited = 0;
+    while (waited < timeout_sec) {
+        esp_netif_ip_info_t ip;
+        if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+            ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ip.ip));
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        waited++;
+        ESP_LOGI(TAG, "Waiting for IP... %d/%d", waited, timeout_sec);
+    }
+    return false;
+}
+
 static void wifi_init_sta(void);
 
 static void time_sync_after_wifi(void);
@@ -312,17 +454,25 @@ static void time_sync_after_wifi(void);
 static void fetch_worker(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(2000));
 
+    /* Check NVS for WiFi credentials */
+    if (!nvs_wifi_read(cfg_ssid, cfg_pass)) {
+        ESP_LOGI(TAG, "No WiFi config, starting provisioning...");
+        start_provisioning();
+        return;
+    }
+
+    ESP_LOGI(TAG, "WiFi config found: %s", cfg_ssid);
+    strlcpy(WIFI_SSID_BUF, cfg_ssid, sizeof(WIFI_SSID_BUF));
+    strlcpy(WIFI_PASS_BUF, cfg_pass, sizeof(WIFI_PASS_BUF));
+
     wifi_init_sta();
 
-    /* Wait for IP address */
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    int wait = 0;
-    while (netif && wait < 30) {
-        esp_netif_ip_info_t ip;
-        if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) break;
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        wait++;
-        ESP_LOGI(TAG, "Waiting for IP... %d", wait);
+    /* Wait for IP with timeout */
+    if (!wifi_connect_with_timeout(30)) {
+        ESP_LOGW(TAG, "WiFi connection timeout, starting provisioning...");
+        esp_wifi_stop();
+        start_provisioning();
+        return;
     }
 
     /* SNTP must be called AFTER TCP/IP stack (netif) is initialized */
@@ -352,6 +502,7 @@ static void fetch_worker(void *arg) {
                         lv_obj_add_flag(img_weapon[i], LV_OBJ_FLAG_HIDDEN);
                     }
                 }
+                lv_obj_clear_flag(lbl_weapon_title, LV_OBJ_FLAG_HIDDEN);
                 countdown_update(NULL);
                 lv_obj_invalidate(lbl_map_name);
                 lv_obj_invalidate(lbl_time_range);
@@ -513,10 +664,11 @@ static void fetch_worker(void *arg) {
             esp_wifi_connect();
             ESP_LOGI(TAG, "WiFi reconnecting...");
 
+            esp_netif_t *netif2 = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
             int wait = 0;
             while (wait < 15) {
                 esp_netif_ip_info_t ip;
-                if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) break;
+                if (esp_netif_get_ip_info(netif2, &ip) == ESP_OK && ip.ip.addr != 0) break;
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 wait++;
             }
@@ -559,7 +711,9 @@ static void wifi_init_sta(void) {
         esp_netif_create_default_wifi_sta();
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_wifi_init(&cfg);
-        wifi_config_t wc = { .sta = { .ssid = WIFI_SSID, .password = WIFI_PASS } };
+        wifi_config_t wc = { .sta = { } };
+        strlcpy((char *)wc.sta.ssid, WIFI_SSID_BUF, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, WIFI_PASS_BUF, sizeof(wc.sta.password));
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_set_config(WIFI_IF_STA, &wc);
         inited = true;
@@ -777,6 +931,7 @@ void app_main(void) {
         lv_obj_set_style_text_letter_space(lbl_weapon_title, 0, 0);
         lv_label_set_text(lbl_weapon_title, "发放武器");
         lv_obj_align(lbl_weapon_title, LV_ALIGN_TOP_MID, 0, 368);
+        lv_obj_add_flag(lbl_weapon_title, LV_OBJ_FLAG_HIDDEN);
 
         lv_timer_create(countdown_update, 1000, NULL);
 
