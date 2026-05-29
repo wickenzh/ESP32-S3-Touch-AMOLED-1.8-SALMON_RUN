@@ -121,7 +121,7 @@ static const char *stage_cn(const char *en) {
     if (strcmp(en, "Salmonid Smokeyard") == 0) return "时不知鲑烟熏工房";
     if (strcmp(en, "Sockeye Station") == 0) return "新卷堡";
     if (strcmp(en, "Jammin' Salmon Junction") == 0) return "生筋子系统交流道遗址";
-    if (strcmp(en, "Ruins of Ark Polaris") == 0) return "鲑鱼心斗技场";
+    if (strcmp(en, "Ruins of Ark Polaris") == 0) return "鲑鱼心脏斗技场";
     return en;
 }
 
