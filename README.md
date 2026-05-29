@@ -110,6 +110,7 @@ data.coopGroupingSchedule.regularSchedules.nodes[]
 - 格式：`还剩X小时XX分XX秒`（有小时时）或 `还剩XX分XX秒`（无小时时）
 - 日程结束时显示 `已结束`
 - 使用 `snprintf` 手动格式化（ESP32 的 newlib 不支持 `%-m` 去前导零格式）
+- **倒计时结束后自动刷新**：检测到 `已结束` 后等待 5 秒，重新联网获取下一阶段数据，获取完成后自动断开 WiFi
 
 ### 7. 时间范围显示
 
