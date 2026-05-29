@@ -108,7 +108,7 @@ data.coopGroupingSchedule.regularSchedules.nodes[]
 | Salmonid Smokeyard | 时不知鲑烟熏工房 |
 | Jammin' Salmon Junction | 生筋子系统交流道遗址 |
 | Gone Fission Hydroplant | 麦年海洋发电所 |
-| Ruins of Ark Polaris | 鲑鱼心斗技场 |
+| Ruins of Ark Polaris | 鲑鱼心脏斗技场 |
 
 **BOSS 鲑鱼：**
 
