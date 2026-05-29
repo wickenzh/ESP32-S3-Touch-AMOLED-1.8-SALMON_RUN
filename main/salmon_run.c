@@ -67,6 +67,7 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 #define LVGL_TASK_MIN_DELAY_MS 5
 
 static lv_obj_t *lbl_status = NULL;
+static lv_obj_t *spinner = NULL;
 static lv_obj_t *lbl_weapon_title = NULL;
 static lv_obj_t *lbl_map_name = NULL;
 static lv_obj_t *lbl_time_range = NULL;
@@ -422,7 +423,9 @@ static void start_provisioning(void) {
     }
 
     if (lock_lvgl(-1)) {
+        if (spinner) { lv_obj_del(spinner); spinner = NULL; }
         lv_label_set_text(lbl_status, "WiFi Setup");
+        lv_obj_clear_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(lbl_map_name, AP_SSID);
         lv_label_set_text(lbl_time_range, "Connect & configure");
         unlock_lvgl();
@@ -457,11 +460,25 @@ static void fetch_worker(void *arg) {
     /* Check NVS for WiFi credentials */
     if (!nvs_wifi_read(cfg_ssid, cfg_pass)) {
         ESP_LOGI(TAG, "No WiFi config, starting provisioning...");
+        if (lock_lvgl(-1)) {
+            if (spinner) { lv_obj_del(spinner); spinner = NULL; }
+            unlock_lvgl();
+        }
         start_provisioning();
         return;
     }
 
     ESP_LOGI(TAG, "WiFi config found: %s", cfg_ssid);
+
+    if (lock_lvgl(-1)) {
+        if (spinner) {
+            lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_label_set_text(lbl_status, "Connecting to WiFi");
+        lv_obj_clear_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
+        unlock_lvgl();
+    }
+
     strlcpy(WIFI_SSID_BUF, cfg_ssid, sizeof(WIFI_SSID_BUF));
     strlcpy(WIFI_PASS_BUF, cfg_pass, sizeof(WIFI_PASS_BUF));
 
@@ -470,9 +487,21 @@ static void fetch_worker(void *arg) {
     /* Wait for IP with timeout */
     if (!wifi_connect_with_timeout(30)) {
         ESP_LOGW(TAG, "WiFi connection timeout, starting provisioning...");
+        if (lock_lvgl(-1)) {
+            if (spinner) { lv_obj_del(spinner); spinner = NULL; }
+            lv_label_set_text(lbl_status, "");
+            lv_obj_add_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
+            unlock_lvgl();
+        }
         esp_wifi_stop();
         start_provisioning();
         return;
+    }
+
+    /* WiFi connected, update status */
+    if (lock_lvgl(-1)) {
+        lv_label_set_text(lbl_status, "Fetching data...");
+        unlock_lvgl();
     }
 
     /* SNTP must be called AFTER TCP/IP stack (netif) is initialized */
@@ -486,13 +515,15 @@ static void fetch_worker(void *arg) {
 
         ESP_LOGI(TAG, "Got %zu bytes JSON", jlen);
 
-        if (parse_schedule(json)) {
+            if (parse_schedule(json)) {
             free(json);
-            data_loaded = true;
+                    data_loaded = true;
 
-            if (lock_lvgl(-1)) {
-                lv_label_set_text(lbl_status, "");
-                lv_label_set_text(lbl_map_name, stage_cn(shift_map_name));
+                    if (lock_lvgl(-1)) {
+                        if (spinner) { lv_obj_del(spinner); spinner = NULL; }
+                        lv_label_set_text(lbl_status, "");
+                        lv_obj_add_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
+                        lv_label_set_text(lbl_map_name, stage_cn(shift_map_name));
                 lv_label_set_text(lbl_time_range, shift_times_str);
 
                 for (int i = 0; i < 4; i++) {
@@ -640,13 +671,16 @@ static void fetch_worker(void *arg) {
                     }
                 }
             }
+
             break;
         }
         free(json);
     }
 
     if (!data_loaded && lock_lvgl(-1)) {
+        if (spinner) { lv_obj_del(spinner); spinner = NULL; }
         lv_label_set_text(lbl_status, "Fetch Failed");
+        lv_obj_clear_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
         unlock_lvgl();
     }
 
@@ -678,10 +712,11 @@ static void fetch_worker(void *arg) {
                 if (r > 0) vTaskDelay(pdMS_TO_TICKS(2000));
                 char *json = NULL; size_t jlen = 0;
                 if (http_get(SCHEDULE_URL, (uint8_t **)&json, &jlen) < 0) continue;
-                if (parse_schedule(json)) {
+            if (parse_schedule(json)) {
                     free(json);
                     data_loaded = true;
                     if (lock_lvgl(-1)) {
+                        if (spinner) { lv_obj_del(spinner); spinner = NULL; }
                         lv_label_set_text(lbl_map_name, stage_cn(shift_map_name));
                         lv_label_set_text(lbl_time_range, shift_times_str);
                         countdown_update(NULL);
@@ -748,30 +783,6 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
     {0x29, (uint8_t[]){0x00}, 0, 10},
     {0x51, (uint8_t[]){0x80}, 1, 0},
 };
-
-static void button_sleep_task(void *arg) {
-    gpio_config_t btn_cfg = {
-        .pin_bit_mask = 1ULL << PIN_BUTTON,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&btn_cfg);
-
-    vTaskDelay(pdMS_TO_TICKS(5000));
-
-    while (1) {
-        if (gpio_get_level(PIN_BUTTON) == 0) {
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            if (gpio_get_level(PIN_BUTTON) == 0) {
-                ESP_LOGI(TAG, "Button held, restarting...");
-                esp_restart();
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
 
 void app_main(void) {
     nvs_flash_init();
@@ -863,20 +874,6 @@ void app_main(void) {
         img_map = lv_img_create(lv_scr_act());
         lv_obj_add_flag(img_map, LV_OBJ_FLAG_HIDDEN);
 
-        lbl_open_badge = lv_label_create(lv_scr_act());
-        lv_obj_set_style_bg_color(lbl_open_badge, lv_color_make(0x60, 0x3B, 0xFF), 0);
-        lv_obj_set_style_bg_opa(lbl_open_badge, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(lbl_open_badge, lv_color_white(), 0);
-        lv_obj_set_style_text_font(lbl_open_badge, &lv_font_pingfang_18_cjk, 0);
-        lv_obj_set_style_border_color(lbl_open_badge, lv_color_white(), 0);
-        lv_obj_set_style_border_width(lbl_open_badge, 2, 0);
-        lv_obj_set_style_pad_hor(lbl_open_badge, 10, 0);
-        lv_obj_set_style_pad_ver(lbl_open_badge, 4, 0);
-        lv_obj_set_style_radius(lbl_open_badge, 4, 0);
-        lv_label_set_text(lbl_open_badge, "开放!");
-        lv_obj_align(lbl_open_badge, LV_ALIGN_TOP_MID, 0, 6);
-        lv_obj_add_flag(lbl_open_badge, LV_OBJ_FLAG_HIDDEN);
-
         img_boss = lv_img_create(lv_scr_act());
         lv_obj_add_flag(img_boss, LV_OBJ_FLAG_HIDDEN);
 
@@ -922,8 +919,31 @@ void app_main(void) {
         lbl_status = lv_label_create(lv_scr_act());
         lv_obj_set_style_text_color(lbl_status, lv_color_white(), 0);
         lv_obj_set_style_text_font(lbl_status, &lv_font_pingfang_16_cjk, 0);
-        lv_label_set_text(lbl_status, "Loading...");
-        lv_obj_align(lbl_status, LV_ALIGN_CENTER, 0, 0);
+        lv_label_set_text(lbl_status, "");
+        lv_obj_align(lbl_status, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_add_flag(lbl_status, LV_OBJ_FLAG_HIDDEN);
+
+        spinner = lv_spinner_create(lv_scr_act(), 1000, 60);
+        lv_obj_set_size(spinner, 60, 60);
+        lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -20);
+        lv_obj_set_style_arc_color(spinner, lv_color_make(0x60, 0x3B, 0xFF), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(spinner, lv_color_make(0x33, 0x33, 0x33), LV_PART_MAIN);
+        lv_obj_set_style_arc_width(spinner, 5, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_width(spinner, 5, LV_PART_MAIN);
+
+        lbl_open_badge = lv_label_create(lv_scr_act());
+        lv_obj_set_style_bg_color(lbl_open_badge, lv_color_make(0x60, 0x3B, 0xFF), 0);
+        lv_obj_set_style_bg_opa(lbl_open_badge, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(lbl_open_badge, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_open_badge, &lv_font_pingfang_18_cjk, 0);
+        lv_obj_set_style_border_color(lbl_open_badge, lv_color_white(), 0);
+        lv_obj_set_style_border_width(lbl_open_badge, 2, 0);
+        lv_obj_set_style_pad_hor(lbl_open_badge, 10, 0);
+        lv_obj_set_style_pad_ver(lbl_open_badge, 4, 0);
+        lv_obj_set_style_radius(lbl_open_badge, 4, 0);
+        lv_label_set_text(lbl_open_badge, "开放!");
+        lv_obj_align(lbl_open_badge, LV_ALIGN_TOP_MID, 0, 6);
+        lv_obj_add_flag(lbl_open_badge, LV_OBJ_FLAG_HIDDEN);
 
         lbl_weapon_title = lv_label_create(lv_scr_act());
         lv_obj_set_style_text_color(lbl_weapon_title, lv_color_white(), 0);
